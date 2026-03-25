@@ -1,0 +1,5 @@
+{
+  "name": "Data Lineage Explorer",
+  "description": "A standalone React web application that visualizes data lineage in a Medallion Architecture (Source -> Silver -> Gold -> Semantic).",
+  "requestFramePermissions": []
+}
