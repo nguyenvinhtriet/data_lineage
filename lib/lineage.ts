@@ -155,8 +155,23 @@ export const parseExcel = async (file: File): Promise<LineageRow[]> => {
         const workbook = XLSX.read(data, { type: 'array' });
         const sheetName = workbook.SheetNames.includes('Lineage') ? 'Lineage' : workbook.SheetNames[0];
         const worksheet = workbook.Sheets[sheetName];
-        const json = XLSX.utils.sheet_to_json<LineageRow>(worksheet);
-        resolve(json);
+        const json = XLSX.utils.sheet_to_json<any>(worksheet);
+        const normalizedJson = json.map(row => {
+          const newRow: any = {};
+          Object.keys(row).forEach(key => {
+            const trimmedKey = key.trim();
+            // Map common lowercase/variations to the exact interface keys
+            let finalKey = trimmedKey;
+            if (trimmedKey.toLowerCase() === 'id') finalKey = 'ID';
+            if (trimmedKey.toLowerCase() === 'label') finalKey = 'Label';
+            if (trimmedKey.toLowerCase() === 'layer') finalKey = 'Layer';
+            if (trimmedKey.toLowerCase() === 'targetids' || trimmedKey.toLowerCase() === 'target_ids' || trimmedKey.toLowerCase() === 'targets') finalKey = 'TargetIDs';
+            
+            newRow[finalKey] = typeof row[key] === 'string' ? row[key].trim() : row[key];
+          });
+          return newRow as LineageRow;
+        });
+        resolve(normalizedJson);
       } catch (error) {
         reject(error);
       }
@@ -173,6 +188,16 @@ export const LAYER_X_MAP: Record<string, number> = {
   'Semantic': 1200,
 };
 
+export const normalizeLayer = (layer: string | undefined) => {
+  if (!layer) return 'Source';
+  const l = layer.toLowerCase();
+  if (l.includes('source')) return 'Source';
+  if (l.includes('silver') || l.includes('sliver')) return 'Silver';
+  if (l.includes('gold')) return 'Gold';
+  if (l.includes('semantic')) return 'Semantic';
+  return 'Source';
+};
+
 export const calculateLayout = (nodes: Node[]) => {
   const layerGroups: Record<string, Node[]> = {
     'Source': [], 'Silver': [], 'Gold': [], 'Semantic': []
@@ -187,6 +212,8 @@ export const calculateLayout = (nodes: Node[]) => {
   const newNodes = [...nodes];
   let maxHeight = 0;
 
+  const processedNodeIds = new Set<string>();
+
   Object.entries(layerGroups).forEach(([layer, layerNodes]) => {
     // Sort to keep consistent ordering
     layerNodes.sort((a, b) => (a.data.label as string).localeCompare(b.data.label as string));
@@ -194,8 +221,9 @@ export const calculateLayout = (nodes: Node[]) => {
     if (totalHeight > maxHeight) maxHeight = totalHeight;
     
     layerNodes.forEach((node, index) => {
-      const n = newNodes.find(x => x.id === node.id);
+      const n = newNodes.find(x => x.id === node.id && !processedNodeIds.has(x.id));
       if (n) {
+        processedNodeIds.add(n.id);
         n.position = {
           x: LAYER_X_MAP[layer] || 0,
           y: index * 80
@@ -208,20 +236,29 @@ export const calculateLayout = (nodes: Node[]) => {
 };
 
 export const convertToGraph = (data: LineageRow[]) => {
+  // Remove duplicate IDs from data to prevent layout issues and React Flow errors
+  const uniqueData = new Map<string, LineageRow>();
+  data.forEach(row => {
+    if (!uniqueData.has(row.ID)) {
+      uniqueData.set(row.ID, row);
+    }
+  });
+  const deduplicatedData = Array.from(uniqueData.values());
+
   const edges: Edge[] = [];
 
   const connectedNodeIds = new Set<string>();
 
   // Create edges first
-  data.forEach((row) => {
+  deduplicatedData.forEach((row) => {
     if (row.TargetIDs) {
       const targets = row.TargetIDs.split(',').map(s => s.trim()).filter(Boolean);
       targets.forEach(targetId => {
         connectedNodeIds.add(row.ID);
         connectedNodeIds.add(targetId);
 
-        const targetRow = data.find(r => r.ID === targetId);
-        const isGoldToGold = row.Layer === 'Gold' && targetRow?.Layer === 'Gold';
+        const targetRow = deduplicatedData.find(r => r.ID === targetId);
+        const isGoldToGold = normalizeLayer(row.Layer) === 'Gold' && normalizeLayer(targetRow?.Layer) === 'Gold';
         const defaultColor = isGoldToGold ? '#f59e0b' : '#94a3b8'; // amber-500 for gold-to-gold
         const highlightColor = isGoldToGold ? '#d97706' : '#3b82f6'; // darker amber for highlight, blue for normal
 
@@ -247,11 +284,12 @@ export const convertToGraph = (data: LineageRow[]) => {
     }
   });
 
-  const filteredData = data.filter(row => row.Layer !== 'Source' || connectedNodeIds.has(row.ID));
+  const filteredData = deduplicatedData.filter(row => normalizeLayer(row.Layer) !== 'Source' || connectedNodeIds.has(row.ID));
 
   const rawNodes: Node[] = filteredData.map((row) => {
     let subType = '';
-    if (row.Layer === 'Gold') {
+    const normalizedLayer = normalizeLayer(row.Layer);
+    if (normalizedLayer === 'Gold') {
       if (row.Label.toLowerCase().includes('dim')) subType = 'Dim';
       if (row.Label.toLowerCase().includes('fact')) subType = 'Fact';
     }
@@ -259,7 +297,7 @@ export const convertToGraph = (data: LineageRow[]) => {
     return {
       id: row.ID,
       position: { x: 0, y: 0 },
-      data: { label: row.Label, layer: row.Layer || 'Source', subType, dimmed: false },
+      data: { label: row.Label, layer: normalizedLayer, subType, dimmed: false },
       type: 'medallion',
     };
   });
