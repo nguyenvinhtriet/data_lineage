@@ -167,7 +167,12 @@ export const parseExcel = async (file: File): Promise<LineageRow[]> => {
             if (trimmedKey.toLowerCase() === 'layer') finalKey = 'Layer';
             if (trimmedKey.toLowerCase() === 'targetids' || trimmedKey.toLowerCase() === 'target_ids' || trimmedKey.toLowerCase() === 'targets') finalKey = 'TargetIDs';
             
-            newRow[finalKey] = typeof row[key] === 'string' ? row[key].trim() : row[key];
+            let val = row[key];
+            if (typeof val === 'string') val = val.trim();
+            if ((finalKey === 'TargetIDs' || finalKey === 'ID') && val !== undefined && val !== null) {
+              val = String(val);
+            }
+            newRow[finalKey] = val;
           });
           return newRow as LineageRow;
         });
@@ -237,10 +242,19 @@ export const calculateLayout = (nodes: Node[]) => {
 
 export const convertToGraph = (data: LineageRow[]) => {
   // Remove duplicate IDs from data to prevent layout issues and React Flow errors
+  // If duplicate IDs are found, merge their TargetIDs to support 1-to-N relationships defined across multiple rows
   const uniqueData = new Map<string, LineageRow>();
   data.forEach(row => {
     if (!uniqueData.has(row.ID)) {
-      uniqueData.set(row.ID, row);
+      uniqueData.set(row.ID, { ...row });
+    } else {
+      const existing = uniqueData.get(row.ID)!;
+      if (row.TargetIDs) {
+        const existingTargets = existing.TargetIDs ? existing.TargetIDs.split(',').map(s => s.trim()).filter(Boolean) : [];
+        const newTargets = row.TargetIDs.split(',').map(s => s.trim()).filter(Boolean);
+        const mergedTargets = Array.from(new Set([...existingTargets, ...newTargets]));
+        existing.TargetIDs = mergedTargets.join(',');
+      }
     }
   });
   const deduplicatedData = Array.from(uniqueData.values());
